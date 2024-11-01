@@ -4,7 +4,6 @@ import time
 import itertools
 import networkx as nx
 
-
 class Node:
     """
     Represents a node in a network. Responsible for handling route requests (RREQ),
@@ -61,7 +60,7 @@ class Node:
             path (list of int): The path from the source to the destination.
         """
         print(f"Node {self.node_id} sending RREP to Node {source} with path: {path}")
-        self.network.send_rrep(self, source, path)
+        # self.network.send_rrep(self, source, path)
 
     def receive_rrep(self, path):
         """
@@ -93,7 +92,8 @@ class Network:
     def __init__(self, num_nodes):
         self.nodes = []
         self.connections = {node_id: set() for node_id in range(num_nodes)}
-        self.packet_delivered = 0
+        self.info_packet_delivered = 0
+        self.confirmation_packet_delivered =0
         self.total_packets = 0
         self.total_latency = 0
         # self.connections = {0: {2, 6}, 1: {3, 5}, 2: {0, 3, 6}, 3: {1, 2},
@@ -127,11 +127,18 @@ class Network:
         Args:
             num_nodes (int): The number of nodes in the network.
         """
+         # Ensure a connected "backbone" by creating a linear path
+        for i in range(num_nodes - 1):
+            self.connections[i].add(i + 1)
+            self.connections[i + 1].add(i)
+        
+        # Add random connections with a 30% probability
         for i in range(num_nodes):
             for j in range(i + 1, num_nodes):
-                if random.random() < 0.3:  # 30% chance of connection
+                if random.random() < 0.3:
                     self.connections[i].add(j)
                     self.connections[j].add(i)
+        
         print("Network topology created with connections:")
         for node_id, neighbors in self.connections.items():
             print(f"Node {node_id}: Connected to {', '.join(map(str, neighbors))}")
@@ -147,26 +154,12 @@ class Network:
             path (list of int): The path taken by the RREQ so far.
         """
         
-        self.total_packets += 1
-        start_time = time.time()
-
-        # for neighbor_id in self.connections[sender.node_id]:
-        #     neighbor = self.nodes[neighbor_id]
-        #     if neighbor.node_id not in path:  # Avoid cycles
-        #         neighbor.receive_rreq(sender.node_id, destination, path.copy())
-        
-         # Measure latency for each successful packet delivery
         for neighbor_id in self.connections[sender.node_id]:
             neighbor = self.nodes[neighbor_id]
             if neighbor.node_id not in path:
                 neighbor.receive_rreq(sender.node_id, destination, path.copy())
         
-        # If the last node in the path is the destination, update metrics
-        if path[-1] == destination:
-            self.packet_delivered += 1
-            end_time = time.time()
-            latency = end_time - start_time
-            self.total_latency += latency
+       
     
     
     def send_rrep(self, sender, source, path):
@@ -184,41 +177,298 @@ class Network:
             print(f"RREP forwarded from Node {sender.node_id} to Node {next_hop_id} with path: {path}")
             self.nodes[next_hop_id].receive_rrep(path)
             
-    def calculate_metrics(self):
-        pdr = (self.packet_delivered / self.total_packets) * 100 if self.total_packets > 0 else 0
-        avg_latency = self.total_latency / self.packet_delivered if self.packet_delivered > 0 else 0
-        throughput = self.packet_delivered / self.total_latency if self.total_latency > 0 else 0
-        return pdr, avg_latency, throughput
+    def send_packet(self, shortest_path):
+        """
+        Sends 5 packets from the source to the destination along the shortest path.
+        Each packet contains a unique message, sent one second apart. 
+        Calculates and stores metrics for each packet to enable plotting.
+        """
+        source = shortest_path[0]
+        destination = shortest_path[-1]
         
-    def calculate_shortest_path(self):
-        if self.found_paths:
-            shortest_path = min(self.found_paths, key=len)
-            print(f"\nShortest path selected for RREP: {shortest_path}")
-            self.nodes[shortest_path[-1]].send_rrep(shortest_path[0], shortest_path)
+        print("\nStarting packet transmission...\n")
+        self.total_packets = 5  # Set total packets to 5
+
+        # Lists to store metrics for each packet
+        pdr_values = []
+        conf_values = []
+        avg_latency_values = []
+        throughput_values = []
+
+        for i in range(1, 6):  # Send 5 packets
+            start_time = time.time()  # Start timestamp for latency measurement
+            packet_message = f"Msg of packet {i}"
+            print(f"\nSource {source} sending: '{packet_message}'")
+
+            # Simulate packet traversing each node in the shortest path
+            for node in shortest_path:
+                time.sleep(0.2)  # Delay to simulate packet transmission time
+                print(f"Packet '{packet_message}' is at Node {node}")
+
+            # Destination receives the packet
+            end_time = time.time()  # End timestamp for latency measurement
+            latency = end_time - start_time
+            self.total_latency += latency  # Add to total latency
+            self.info_packet_delivered += 1  # Increment delivered packets count
+
+            print(f"Destination {destination} received: '{packet_message}' with latency: {latency:.4f} seconds")
+            time.sleep(1)  # Delay of 1 second between packets
+
+            # Send confirmation back to the source
+            confirmation_msg = f"Confirmation from {destination}: Packet {i} received."
+            print(confirmation_msg)
+
+            self.confirmation_packet_delivered += 1
+            self.total_latency += time.time() - start_time  # Update total latency
+            #self.plot_metrics(pdr_values, avg_latency_values, throughput_values)
+        
+    def disconnect_node(self, disconnected_node):
+        """
+        Disconnects a specified node from the network by removing it and its connections.
+
+        Args:
+            disconnected_node (int): The node to disconnect from the network.
+        """
+        if disconnected_node in self.connections:
+            # Remove connections to this node from all of its neighbors
+            for neighbor in list(self.connections[disconnected_node]):
+                self.connections[neighbor].discard(disconnected_node)
+            # Remove the node itself from the connections
+            del self.connections[disconnected_node]
+
+            print(f"Node {disconnected_node} and its links have been removed from the network.")
+            self.plot_network()
             
+            
+    def reconnect_node(self, reconnected_node, neighbors):
+        """
+        Reconnects a specified node to the network with the provided neighbors.
+
+        Args:
+            reconnected_node (int): The node to reconnect to the network.
+            neighbors (list): List of neighbors to connect the reconnected node with.
+        """
+        # Ensure the node is not already in the network
+        if reconnected_node in self.connections:
+            print(f"Node {reconnected_node} already exists in the network.")
+            return
+
+        # Initialize the node in the network
+        self.connections[reconnected_node] = set()
+
+        # Connect the node to each specified neighbor
+        for neighbor in neighbors:
+            if neighbor in self.connections:
+                self.connections[reconnected_node].add(neighbor)
+                self.connections[neighbor].add(reconnected_node)
+            else:
+                print(f"Neighbor {neighbor} does not exist in the network. Skipping connection.")
+        print(self.connections)
+        print(f"Node {reconnected_node} has been added back to the network with connections: {neighbors}")
+        self.plot_network()
+        
+    def reconnect_node_with_user_input(self, reconnected_node):
+        """
+        Prompts the user to enter neighbors for a disconnected node and then reconnects it.
+
+        Args:
+            reconnected_node (int): The node to reconnect to the network.
+        """
+        if reconnected_node is None:
+            print("Error: Invalid node ID provided.")
+            return
+        # Prompt the user to enter neighbors as a comma-separated list
+        neighbors_input = input(f"Enter the neighbors of node {reconnected_node} (comma-separated): ")
+        
+        # Convert the input string to a list of integers
+        try:
+            neighbors = [int(n) for n in neighbors_input.split(',')]
+        except ValueError:
+            print("Invalid input. Please enter a comma-separated list of integer node IDs.")
+            return
+
+        # Call the reconnect_node function to reconnect the node with specified neighbors
+        self.reconnect_node(reconnected_node, neighbors)
+        
+    def resend_packets(self):
+        """
+        Resends packets from Node 0 to Node 9 by initiating a route request (RREQ),
+        displaying all possible paths found, calculating the shortest path, and
+        sending packets along the shortest path.
+        """
+        # Step 1: Initiate RREQ from Node 0 to Node 9
+        print("Initiating RREQ from Node 0 to Node 9...")
+        self.nodes[0].send_rreq(destination=9)
+
+        # Step 2: Display all possible paths found
+        print("\nAll possible paths from Node 0 to Node 9:")
+        for i, path in enumerate(self.found_paths, start=1):
+            print(f"Path {i} : {path}")
+
+        # Step 3: Calculate the shortest path
+        shortest_path = self.calculate_shortest_path(self.found_paths)
+        print(f"\nShortest path from Node 0 to Node 9: {shortest_path}")
+
+        # Step 4: Send packets along the shortest path
+        if shortest_path:
+            print("Sending packets along the shortest path...")
+            self.send_packet(shortest_path)
+        else:
+            print("No valid path found from Node 0 to Node 9.")
+
+
+
+    def run_simulation(self, source, destination):
+        # Step 1: Find the shortest path
+        shortest_path = self.calculate_shortest_path(self.found_paths)
+        print(f"Initial shortest path: {shortest_path}")
+
+        # Step 2: Ask the user if they want to disconnect a node
+        disconnect_choice = input("Do you want to disconnect any node? [Y/n]: ").strip().lower()
+        if disconnect_choice == 'y':
+            node_to_disconnect = int(input("Which node do you want to disconnect? ").strip())
+            print(f"Disconnecting node: {node_to_disconnect}")
+            self.disconnect_node(node_to_disconnect)
+            # Call the new function to handle the disconnection and pathfinding
+            self.find_new_shortest_path(node_to_disconnect)
+        else:
+            # If no disconnection, send packets using the original shortest path
+            self.send_packet(shortest_path)
+
+        # Calculate metrics and print
+        info_pdr, conf_pdr,  avg_latency, throughput = self.calculate_metrics()
+        print(f"Information Packet Delivery Ratio: {info_pdr:.2f}%")
+        print(f"Confirmation Packet Delivery Ratio: {conf_pdr:.2f}%")
+        print(f"Average Latency: {avg_latency:.2f}s")
+        print(f"Throughput: {throughput:.2f} packets/second")
+        return node_to_disconnect
+        
+        
+
+    def find_new_shortest_path(self, node_to_disconnect):
+        # Step 3: Copy paths without the disconnected node
+        paths_after_disc = []
+        for path in self.found_paths:
+            # Check if the node_to_disconnect is in the current path
+            if node_to_disconnect not in path:
+                paths_after_disc.append(path)
+            
+        
+        #print(f"Paths after disconnecting node {node_to_disconnect}: {len(paths_after_disc)}")  # Should show the number of valid paths
+        #print("Valid paths:", paths_after_disc)  # Should list only valid paths
+
+        # Step 4: Find the new shortest path after disconnection
+        shortest_path_after_disc = self.calculate_shortest_path(paths_after_disc)
+        print(f"Shortest path after disconnection: {shortest_path_after_disc}")
+
+        # If no valid paths exist after disconnection, exit
+        if not shortest_path_after_disc:
+            print("No valid paths available after disconnection.")
+            return
+
+        # Send packets using the new shortest path
+        self.send_packet(shortest_path_after_disc)
+        
+        
+    def calculate_metrics(self):
+        
+        info_pdr = (self.info_packet_delivered / self.total_packets) * 100 if self.total_packets > 0 else 0
+        conf_pdr = (self.confirmation_packet_delivered / self.total_packets) * 100 if self.total_packets > 0 else 0
+        avg_latency = self.total_latency / self.info_packet_delivered if self.info_packet_delivered > 0 else 0
+        throughput = self.info_packet_delivered / self.total_latency if self.total_latency > 0 else 0
+        return info_pdr,conf_pdr,  avg_latency, throughput
+        
+    def calculate_shortest_path(self, paths):
+        if paths:  # Check if the provided paths list is not empty
+            shortest_path = min(paths, key=len)  # Calculate the shortest path by length
+            print(f"\nShortest path selected for RREP: {shortest_path}")
+            self.nodes[shortest_path[-1]].send_rrep(shortest_path[0], shortest_path)  # Send the RREP
+            return shortest_path
+    
+    def plot_metrics(self, pdr_values, conf_values,  avg_latency_values, throughput_values):
+        """
+        Plot each metric (PDR, Average Latency, Throughput) over the transmission of 5 packets.
+        """
+        packets = range(1, 6)  # X-axis for packet numbers
+
+        # Plot Packet Delivery Ratio (PDR)
+        plt.figure(figsize=(8, 5))
+        plt.plot(packets, pdr_values, marker='o', color='blue', label='PDR (%)')
+        plt.xlabel("Packet Number")
+        plt.ylabel("PDR (%)")
+        plt.title("Packet Delivery Ratio Over Time")
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+        # Plot Average Latency
+        plt.figure(figsize=(8, 5))
+        plt.plot(packets, avg_latency_values, marker='o', color='orange', label='Average Latency (s)')
+        plt.xlabel("Packet Number")
+        plt.ylabel("Average Latency (seconds)")
+        plt.title("Average Latency Over Time")
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+        # Plot Throughput
+        plt.figure(figsize=(8, 5))
+        plt.plot(packets, throughput_values, marker='o', color='green', label='Throughput (packets/sec)')
+        plt.xlabel("Packet Number")
+        plt.ylabel("Throughput (packets/sec)")
+        plt.title("Throughput Over Time")
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+    
     def plot_network(self):
         """
         Plots the network topology using NetworkX and Matplotlib.
+        Highlights the source and destination nodes in yellow.
         """
         G = nx.Graph()  # Create an empty graph
 
         # Add nodes and edges to the graph based on network connections
         for node_id in self.connections:
-            G.add_node(node_id)
+            if node_id is not None:
+                G.add_node(node_id)
             for neighbor in self.connections[node_id]:
-                G.add_edge(node_id, neighbor)
+                if neighbor is not None and node_id is not None:
+                    G.add_edge(node_id, neighbor)
 
-        # Draw the network graph
-        pos = nx.spring_layout(G)  # Layout for visual spacing of nodes
-        plt.figure(figsize=(10, 8))
+        # Define positions for each node
+        pos = nx.spring_layout(G, seed=42)  # Seed for consistent layout
+        plt.figure(figsize=(12, 8))
+
+        # Customize node colors: yellow for source and destination, skyblue for others
+        node_colors = []
+        for node in G.nodes:
+            if node == 0 or node == 9:
+                node_colors.append("yellow")
+            else:
+                node_colors.append("skyblue")
+
+        # Customize edge styling
+        edge_styles = {
+            "width": 2,
+            "alpha": 0.5,
+            "edge_color": "gray",
+        }
         
-        # Draw nodes and edges with labels
-        nx.draw_networkx_nodes(G, pos, node_size=700, node_color="skyblue", edgecolors="black")
-        nx.draw_networkx_edges(G, pos, width=2, alpha=0.6, edge_color="gray")
-        nx.draw_networkx_labels(G, pos, font_size=12, font_color="black")
+        # Draw nodes with specified colors and add labels
+        nx.draw_networkx_nodes(G, pos, node_size=800, node_color=node_colors, edgecolors="black", linewidths=1.5)
+        nx.draw_networkx_edges(G, pos, **edge_styles)
+        nx.draw_networkx_labels(G, pos, font_size=10, font_color="black", font_weight="bold")
+        
+        # Highlight source and destination labels
+        # if source is not None:
+        #     nx.draw_networkx_labels(G, pos, labels={source: f"Source ({source})"}, font_color="darkorange", font_weight="bold")
+        # if destination is not None:
+        #     nx.draw_networkx_labels(G, pos, labels={destination: f"Destination ({destination})"}, font_color="darkorange", font_weight="bold")
 
-        # Add title and display
-        plt.title("Network Topology")
+        # Add a title and show the plot
+        plt.title("Enhanced Network Topology", fontsize=16, fontweight="bold")
         plt.axis("off")  # Hide axes
         plt.show()
             
@@ -251,62 +501,16 @@ print("\nAll possible paths from Node 0 to Node 9:")
 for i, path in enumerate(network.found_paths, start=1):
     print(f"Path {i} : {path}")
 
-# Calculate and send RREP along the shortest path
-network.calculate_shortest_path()
-
+shortest_path = network.calculate_shortest_path(network.found_paths)
+print(shortest_path)
+network.plot_network() 
+# print(network.found_paths)
+# Run the simulation with source node 0 and destination node 9
+node_to_disconnect = network.run_simulation(source=0, destination=9)
+print(f"Attempting to reconnect node: {node_to_disconnect}")
+network.reconnect_node_with_user_input(node_to_disconnect)
+network.resend_packets()
 
 # Route Maintenance
-print("\n--- Route Maintenance ---")
-network.initiate_route_maintenance()
-network.plot_network()  # Display the network graph
-
-# # Simulation and Visualization
-# network = Network(num_nodes=10)
-# num_trials = 1  # Running for a fixed number of trials for simplicity
-# pdr_results, latency_results, throughput_results = [], [], []
-
-# num_trials = 50
-# for i in range(num_trials):
-#     # Reset metrics for each trial
-#     network.packet_delivered = 0
-#     network.total_packets = 0
-#     network.total_latency = 0
-
-#     print(f"\n--- Trial {i + 1} ---")
-#     network.nodes[0].send_rreq(destination=9)
-
-#     # Gather metrics
-#     pdr, avg_latency, throughput = network.calculate_metrics()
-#     pdr_results.append(pdr)
-#     latency_results.append(avg_latency)
-#     throughput_results.append(throughput)
-#     print(pdr_results)
-#     print(latency_results)
-#     print(throughput_results)
-
-# # Plotting the metrics
-# plt.figure(figsize=(12, 8))
-
-# # Packet Delivery Ratio (PDR) Plot
-# plt.subplot(3, 1, 1)
-# plt.plot(pdr_results, color='blue', marker='o', linestyle='-')
-# plt.title('Packet Delivery Ratio (PDR) Over Trials')
-# plt.xlabel('Trial')
-# plt.ylabel('PDR (%)')
-
-# # Latency Plot
-# plt.subplot(3, 1, 2)
-# plt.plot(latency_results, color='red', marker='o', linestyle='-')
-# plt.title('Average Latency Over Trials')
-# plt.xlabel('Trial')
-# plt.ylabel('Latency (seconds)')
-
-# # Throughput Plot
-# plt.subplot(3, 1, 3)
-# plt.plot(throughput_results, color='green', marker='o', linestyle='-')
-# plt.title('Throughput Over Trials')
-# plt.xlabel('Trial')
-# plt.ylabel('Throughput (packets/second)')
-
-# plt.tight_layout()
-# plt.show()
+# print("\n--- Route Maintenance ---")
+# network.initiate_route_maintenance()
