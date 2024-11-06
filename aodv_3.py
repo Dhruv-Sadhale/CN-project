@@ -9,8 +9,8 @@ graph = {
     'A': ['B', 'E'],
     'B': ['A', 'C', 'E', 'K'],
     'C': ['B', 'D', 'F'],
-    'D': ['C', 'I'],
-    'E': ['A', 'B', 'L'],
+    'D': ['C', 'I','E'],
+    'E': ['A', 'B','D', 'L'],
     'F': ['C', 'J', 'K'],
     'I': ['D', 'J'],
     'J': ['I', 'F'],
@@ -41,7 +41,7 @@ class Node:
             (self.routing_table[destination][1] == hop_count and 
              self.routing_table[destination][2] < seq_num)):
             self.routing_table[destination] = [next_hop, hop_count, seq_num]
-            print(f"{self.node_id}: Updated routing table with entry for {destination}: {self.routing_table[destination]}")
+            
 
 class RREQ:
     def __init__(self, source_id, source_seq_num, broadcast_id, dest_addr, dest_seq_num, hop_count=0, latest_sender=None):
@@ -90,6 +90,9 @@ def send_rrep2(node, rreq):
 
     while next_hop_node_id != rreq.dest_addr:
         final_path.append(next_hop_node_id)
+        if next_hop_node_id not in nodes or rreq.dest_addr not in nodes[next_hop_node_id].routing_table:
+            print(f"Routing error: No path to destination {rreq.dest_addr} from {next_hop_node_id}")
+            return
         next_hop_node_id = nodes[next_hop_node_id].routing_table[rreq.dest_addr][0]
     final_path.append(rreq.dest_addr)
 
@@ -103,7 +106,10 @@ def send_rrep2(node, rreq):
 
     print(f"{node.node_id} sends RREP to {rreq.source_id}")
 
-    next_hop = node.routing_table[rreq.source_id][0]
+    if rreq.source_id in node.routing_table:
+        next_hop = node.routing_table[rreq.source_id][0]
+    else: 
+        next_hop=None
 
     if next_hop is not None:
         receive_rrep(nodes[next_hop], rrep_packet) 
@@ -118,7 +124,7 @@ def receive_rrep(node, rrep):
     
     if rrep.dest_id == node.node_id:
         node.update_routing_table(rrep.source_id, rrep.latest_sender, rrep.hop_count + 1, rrep.dest_seq_num)
-        print("Path found between source and destination")
+        # print("Path found between source and destination")
         return
     
     node.update_routing_table(rrep.source_id, rrep.latest_sender, rrep.hop_count + 1, rrep.dest_seq_num)
@@ -132,22 +138,29 @@ def receive_rrep(node, rrep):
             latest_sender=node.node_id
         ))
 
+
+visited = set()
+
 def receive_rreq(node, rreq):
     global path_found
-    if path_found:
+    global visited
+    if path_found or rreq.hop_count>10:
         return
-
+    
     # Initialize the queue for BFS and add the starting node
     queue = deque([(node, rreq)])  # Each element is a tuple (current_node, current_rreq)
-
+    if (node.node_id in visited):
+        return
+    visited.add(node.node_id)
     while queue and not path_found:
         current_node, current_rreq = queue.popleft()
-
+        
         # If the current node is the destination, send RREP and stop further propagation
         if current_rreq.dest_addr == current_node.node_id:
             current_node.update_routing_table(current_rreq.source_id, current_rreq.latest_sender, current_rreq.hop_count, current_rreq.source_seq_num)
-            send_rrep(current_node, current_rreq)
             path_found = True
+            queue.clear()
+            send_rrep(current_node, current_rreq)
             return
 
         # Update routing table for the source node if it's not the source itself
@@ -156,9 +169,27 @@ def receive_rreq(node, rreq):
         else:
             current_rreq.hop_count = 0
 
+        if current_rreq.dest_addr in graph[current_node.node_id]:
+            rreq_forward = RREQ(
+                        current_rreq.source_id,
+                        current_rreq.source_seq_num,
+                        current_rreq.broadcast_id,
+                        current_rreq.dest_addr,
+                        current_rreq.dest_seq_num,
+                        current_rreq.hop_count + 1,
+                        latest_sender=current_node.node_id
+                    )
+            print(f"{current_node.node_id} forwards RREQ to {current_rreq.dest_addr}")
+            queue.append((nodes[current_rreq.dest_addr], rreq_forward))
+            
+
         # Forward RREQ to neighbors if the destination is not in the routing table
         if current_rreq.dest_addr not in current_node.routing_table:
             for neighbor_id in graph[current_node.node_id]:
+                # if (rreq.source_id in nodes[neighbor_id].routing_table and nodes[neighbor_id].routing_table[rreq.source_id][0] is not None):
+                #     continue
+                if (neighbor_id in visited):
+                    continue
                 if neighbor_id != current_rreq.latest_sender and neighbor_id != current_rreq.source_id:
                     # Create a new RREQ with incremented hop count
                     rreq_forward = RREQ(
@@ -171,18 +202,27 @@ def receive_rreq(node, rreq):
                         latest_sender=current_node.node_id
                     )
                     print(f"{current_node.node_id} forwards RREQ to {neighbor_id}")
-                    queue.append((nodes[neighbor_id], rreq_forward))
+                    if (nodes[neighbor_id], rreq_forward) not in queue:
+                        queue.append((nodes[neighbor_id], rreq_forward))
+                        visited.add(neighbor_id)
+
         else:
+
             # If destination is in routing table, send RREP along the path
+            path_found=True
             send_rrep2(current_node, current_rreq)
             next_hop_node_id = current_node.routing_table[current_rreq.dest_addr][0]
             
             # Traverse the path to update routing tables for intermediate nodes
-            while next_hop_node_id != current_rreq.dest_addr:
+            while next_hop_node_id != current_rreq.dest_addr and next_hop_node_id in nodes:
                 current_rreq.hop_count += 1
                 nodes[next_hop_node_id].update_routing_table(current_rreq.source_id, current_node.node_id, current_rreq.hop_count, current_rreq.source_seq_num)
                 current_node = nodes[next_hop_node_id]
-                next_hop_node_id = current_node.routing_table[current_rreq.dest_addr][0]
+                
+                if (current_rreq.dest_addr in current_node.routing_table):
+                    next_hop_node_id = current_node.routing_table[current_rreq.dest_addr][0]
+                else:
+                    return
             
             if next_hop_node_id == current_rreq.dest_addr:
                 current_rreq.hop_count += 1
@@ -192,7 +232,7 @@ def receive_rreq(node, rreq):
 
 # RERR handling
 def send_rerr(node, dest):
-    print(f"Node {node.node_id} detected broken route to {dest}. Sending RERR messages.")
+    # print(f"Node {node.node_id} detected broken route to {dest}. Sending RERR messages.")
 
     for neighbor_id in graph[node.node_id]:
         neighbor = nodes[neighbor_id]
@@ -200,7 +240,7 @@ def send_rerr(node, dest):
             if path_info[0] == node.node_id and path_dest == dest:
                 remove_from_routing_table(neighbor, path_dest)
 
-                print(f"{neighbor_id} removes route to {dest} due to broken link with {node.node_id}")
+                # print(f"{neighbor_id} removes route to {dest} due to broken link with {node.node_id}")
                 
                 send_rerr(neighbor,dest)
 
@@ -212,10 +252,8 @@ def delete_node(node_id):
     if node_id in nodes:
         node = nodes[node_id]
         
-        
         for dest in list(node.routing_table.keys()):
             send_rerr(node, dest)
-        
         
         if node_id in graph:
             
@@ -224,7 +262,6 @@ def delete_node(node_id):
           
             del graph[node_id]
 
-        
         del nodes[node_id]
         
         print(f"Node {node_id} has been removed from the network.")
@@ -247,9 +284,11 @@ nodes = {node_id: Node(node_id) for node_id in graph.keys()}
 
 def find_path(start, destination):
     global path_found  
-    global final_path  
+    global final_path
+    global visited  
     path_found = False  
-    final_path = []  
+    final_path = []
+    visited.clear()  
     
     source_node = nodes[start]
     source_node.increment_sequence_num()
@@ -259,51 +298,18 @@ def find_path(start, destination):
     
     print(f"\nStarting RREQ from {start} to {destination}")
     receive_rreq(source_node, rreq_packet)
-    for node_id, node in nodes.items():
-        print(f"\nRouting table for node {node_id}:")
-        for dest, info in node.routing_table.items():
-            print(f"  Destination: {dest}, Next hop: {info[0]}, Hop count: {info[1]}, Sequence number: {info[2]}")
+    # for node_id, node in nodes.items():
+    #     print(f"\nRouting table for node {node_id}:")
+    #     for dest, info in node.routing_table.items():
+    #         print(f"  Destination: {dest}, Next hop: {info[0]}, Hop count: {info[1]}, Sequence number: {info[2]}")
 
-# Simulate AODV routing request from A to I
-# find_path('A', 'I')
-# print("\nFinal path from A to I:", ' -> '.join(final_path))
 
 # Display the routing table of each node
 # for node_id, node in nodes.items():
+
 #     print(f"\nRouting table for node {node_id}:")
 #     for dest, info in node.routing_table.items():
 #         print(f"  Destination: {dest}, Next hop: {info[0]}, Hop count: {info[1]}, Sequence number: {info[2]}")
-
-# Ask user for node to delete and simulate RERR
-# node_to_delete = input("Enter the node to remove (e.g., 'A', 'B'): ").strip().upper()
-
-# delete_node(node_to_delete)
-
-# for node_id, node in nodes.items():
-#     print(f"\nRouting table for node {node_id}:")
-#     for dest, info in node.routing_table.items():
-#         print(f"  Destination: {dest}, Next hop: {info[0]}, Hop count: {info[1]}, Sequence number: {info[2]}")
-
-
-# reconnect = input(f"Do you want to reconnect node {node_to_delete} to the network? (yes/no): ").strip().lower()
-# if reconnect=="yes":
-#     connections = input(f"Enter the nodes you want to connect {node_id} with, separated by commas: ").strip().split(',')
-#     connections = [conn.strip() for conn in connections if conn.strip() in graph]
-#     reconnect_node(node_to_delete,connections)
-
-# print("---------------------graph-----------------------")
-# print(graph)
-
-# print(nodes)
-
-# find_path('A', 'I')
-# print("\nFinal path from A to I:", ' -> '.join(final_path))
-
-# Display the routing table of each node
-for node_id, node in nodes.items():
-    print(f"\nRouting table for node {node_id}:")
-    for dest, info in node.routing_table.items():
-        print(f"  Destination: {dest}, Next hop: {info[0]}, Hop count: {info[1]}, Sequence number: {info[2]}")
 
 
 def animate_graph(graph, highlighted_path):
@@ -381,99 +387,130 @@ def plot_metrics(packet_latencies, delivered_packets, total_packets, simulation_
     plt.show()
 
 
+disconnect_history = []
+moving_nodes = []
+def generate_prob():
+    # Generate a probability (return True for disconnect, False otherwise)
+    return random.random() < 0.4  # Adjust probability threshold as needed
+
+def generate_reconnect_prob(node,source,destination):
+    # Generate a probability (return True for reconnect, False otherwise)
+    if (node==source or node==destination):
+        return True
+    return random.random() < 0.8  # Adjust probability threshold as needed
+
+def run_network_changes(num_changes,source,destination):
+
+    global moving_nodes
+    for _ in range(num_changes):
+        # Randomly select a node for possible disconnection
+        node = random.choice(list(nodes.keys()))
+        
+        # Decide to disconnect with some probability
+        if generate_prob() and node not in disconnect_history:
+            delete_node(node)  # Disconnect the node in the graph
+            disconnect_history.append(node)  # Add to disconnect history
+            moving_nodes.append(node)
+
+        # Decide to reconnect with some probability
+        if generate_reconnect_prob(node,source,destination) and node in disconnect_history:
+            # Randomly select 2-4 neighbors to reconnect
+            potential_neighbors = [n for n in nodes if n != node and n not in disconnect_history]
+            # new_neighbors = random.sample(potential_neighbors, random.randint(2, 4))
+            num_samples = random.randint(2, 4)
+
+# Prevent ValueError by checking the length
+            if len(potential_neighbors) >= num_samples:
+                new_neighbors = random.sample(potential_neighbors, num_samples)
+            else:
+                new_neighbors = potential_neighbors 
+            reconnect_node(node, new_neighbors)  # Reconnect node in the graph
+            disconnect_history.remove(node)  # Remove from disconnect history
+
+
 
 
 # Define the send_packets function with node deletion/reconnection functionality
+
+
+
 def send_packets(source, destination, total_packets):
-    # First, find the path from source to destination
+    global moving_nodes
+    if source not in graph or destination not in graph:
+        print(f"Error: Either source '{source}' or destination '{destination}' is not present in the graph.")
+        return
+    start_time_1 = time.time()
+    
     find_path(source, destination)
     if not final_path:
         print("No valid path from", source, "to", destination)
         return
-    animate_graph(graph, final_path)
+    # animate_graph(graph, final_path)
     
     packets_sent = 0
-    packets_delivered = 0  # Count of successfully delivered packets
-      # Start time for throughput calculation
-    total_latency = 0  # Total latency for all packets
-    delete_probability = 0.2  # Probability of node deletion
+    packets_delivered = 0
+    total_latency = 0
     packet_latencies = []
-    
+
     while packets_sent < total_packets:
-        # Simulate sending packet along the path
         print(f"Sending packet {packets_sent + 1} from {source} to {destination} via path:", ' -> '.join(final_path))
         packets_sent += 1
-        extra_time = 0
-        start_time = time.time()
-        # Randomly simulate node deletion during transmission
-        if random.random() < delete_probability:
-            delete_time = time.time()
-            delete_decision = input("Do you want to delete any node during packet transmission? (yes/no): ").strip().lower()
-            
-            if delete_decision == "yes":
-                node_to_delete = input("Enter the node to remove (e.g., 'A', 'B'): ").strip().upper()
-                
-                if node_to_delete in nodes:
-                    delete_node(node_to_delete)
+        start_time=time.time()
+        # Automate network changes (disconnection/reconnection)
 
-                    # Show updated routing tables after deletion
-                    for node_id, node in nodes.items():
-                        print(f"\nUpdated routing table for node {node_id}:")
-                        for dest, info in node.routing_table.items():
-                            print(f"  Destination: {dest}, Next hop: {info[0]}, Hop count: {info[1]}, Sequence number: {info[2]}")
+        run_network_changes(3,source,destination)
 
-                    # Ask if the user wants to reconnect the deleted node
-                    reconnect = input(f"Do you want to reconnect node {node_to_delete} to the network? (yes/no): ").strip().lower()
-                    if reconnect == "yes":
-                        connections = input(f"Enter the nodes you want to connect {node_to_delete} with, separated by commas: ").strip().split(',')
-                        connections = [conn.strip().upper() for conn in connections if conn.strip().upper() in graph]
-                        reconnect_node(node_to_delete, connections)
-                    
-                    reconnect_time = time.time()
-                    extra_time = reconnect_time - delete_time  # Extra time spent in re-routing
-                    
-                    # Recompute path after network change
-                    print("\nRecomputing path due to network changes...")
-                    find_path(source, destination)
-                    animate_graph(graph, final_path)
-                    if not final_path:
-                        print("No valid path from", source, "to", destination, "after node deletion.")
-                        break  # Stop sending packets if path is broken
+        if source not in graph or destination not in graph:
+            print(f"Error: Either source '{source}' or destination '{destination}' is not present in the graph.")
+            continue
+        # Recompute path if needed
+        flag=False
+        for node in final_path:
+            if node in moving_nodes:
+                flag=True
+        if flag:
+            find_path(source, destination)
+        else:
+            time.sleep(0.0000001)
+        moving_nodes.clear()
+        # animate_graph(graph, final_path)
+        if not final_path:
+            print("No valid path from", source, "to", destination, "after node disconnection.")
+            print(f"Packet {packets_sent} failed to deliver due to network changes.")
+            continue
 
-
-
-        # Calculate latency for this packet
-        current_time = time.time()
-        latency = current_time - start_time - extra_time
-        packet_latencies.append(latency)
-        start_time = current_time  # Reset start time for next packet
-        total_latency += latency
+        # Calculate packet latency
+        
+        # start_time = current_time  # Reset start time for next packet
 
         # Check if packet successfully delivered
-        if final_path:
-            packets_delivered += 1
-            print(f"Packet {packets_sent} delivered successfully with latency: {latency:.4f} seconds")
-        else:
-            print(f"Packet {packets_sent} failed to deliver due to network changes.")
+        packets_delivered += 1
+        # print(packets_delivered)
+        current_time = time.time()
+        latency = current_time - start_time
+        packet_latencies.append(latency)
+        total_latency += latency
+        print(f"Packet {packets_sent} delivered successfully with latency: {latency:} seconds")
+        
+            
 
-        # Delay to simulate packet transmission time
-        time.sleep(0.5)  # Simulated delay for packet transmission
-
-    # Throughput, PDR, and average latency calculations
-    total_time = time.time() - start_time
+    # Calculate metrics
+    
     avg_latency = total_latency / packets_delivered if packets_delivered > 0 else 0
-    throughput = packets_delivered / total_time if total_time > 0 else 0
-    packet_delivery_ratio = packets_delivered / packets_sent if packets_sent > 0 else 0
-
+    throughput = packets_delivered / total_latency if total_latency > 0 else 1
+    # packet_delivery_ratio = packets_delivered / packets_sent if packets_sent > 0 else 0
+    total_time = time.time() - start_time_1
     print("\nPacket transmission summary:")
-    print(f"Total packets sent: {packets_sent}/{total_packets}")
-    print(f"Packets successfully delivered: {packets_delivered}")
-    print(f"Packet Delivery Ratio (PDR): {packet_delivery_ratio:.2f}")
-    print(f"Average latency per packet: {avg_latency:.4f} seconds")
-    print(f"Throughput: {throughput:.2f} packets/second")
-
-    plot_metrics(packet_latencies, packets_delivered, total_packets, total_time)
-
+    # print(f"Total packets sent: {packets_sent}/{total_packets}")
+    # print(f"Packets successfully delivered: {packets_delivered}")
+    # print(f"Packet Delivery Ratio (PDR): {packet_delivery_ratio:}")
+    # print(f"Average latency per packet: {avg_latency:} seconds")
+    # print(f"Throughput: {throughput:} packets/second")
+    print(f"[RESULT] throughput: {throughput}")
+    print(f"[RESULT] avg_latency: {avg_latency}")
+    print(f"[RESULT] PDR: {packets_delivered/packets_sent}")
+    print(f"[RESULT] total_time: {total_time}")
+    # plot_metrics(packet_latencies, packets_delivered, total_packets, total_time)
 
 # Example usage:
 send_packets('A', 'I', total_packets=10)
